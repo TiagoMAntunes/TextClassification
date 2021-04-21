@@ -86,7 +86,7 @@ def main():
     content, labels, mask = transform_and_pad(data)
     del data
 
-    m  = RNN(300, 2, 128, 5)
+    m  = RNN(300, 2, 128, 5, pretrained_embeddings=glove.embeddings)
     # res = m(content, mask)
 
     train(m, content, mask, labels)

@@ -6,7 +6,7 @@ class RNN(nn.Module):
     def __init__(self, embedding_size, n_hidden, hidden_size, output_size, pretrained_embeddings=None):
         super(RNN, self).__init__()
 
-        if pretrained_embeddings:
+        if pretrained_embeddings is not None:
             self.embeddings = lambda x: torch.tensor(pretrained_embeddings[x]).float()
         else:
             self.embeddings = nn.Embedding(400001, 300)
