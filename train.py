@@ -30,7 +30,7 @@ def train(model, data, mask, labels, max_epochs=50):
     losses = []
     accs = []
 
-    optimizer = torch.optim.SGD(model.parameters())
+    optimizer = torch.optim.Adam(model.parameters())
     loss_fn = torch.nn.CrossEntropyLoss()
 
     model.train()
