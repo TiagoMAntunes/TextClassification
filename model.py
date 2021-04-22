@@ -3,7 +3,7 @@ import torch.nn as nn
 initrange = 1
 
 class RNN(nn.Module):
-    def __init__(self, embedding_size, n_hidden, hidden_size, output_size, pretrained_embeddings=None):
+    def __init__(self, embedding_size, n_hidden, hidden_size, output_size, pretrained_embeddings=None, dropout=0):
         super(RNN, self).__init__()
 
         if pretrained_embeddings is not None:
@@ -20,6 +20,8 @@ class RNN(nn.Module):
         self.hidden_layers = nn.ModuleList([nn.Linear(embedding_size + hidden_size, hidden_size)] + [nn.Linear(hidden_size * 2, hidden_size) for _ in range(n_hidden-1)])
 
         self.hidden_activation = nn.Tanh()        
+
+        self.dropout = nn.Dropout(p=dropout)
 
         # hidden_size x output_size
         self.reducer = nn.Linear(hidden_size, output_size)
@@ -53,7 +55,7 @@ class RNN(nn.Module):
             
             for i,w in enumerate(states):
                 join_input = torch.cat((w, prev), dim=-1)
-                states[i] = self.hidden_activation(self.hidden_layers[i](join_input)) * mask_use + w * (1 - mask_use)
+                states[i] = self.dropout(self.hidden_activation(self.hidden_layers[i](join_input))) * mask_use + w * (1 - mask_use)
                 prev = states[i]
 
         return self.activation(self.reducer(states[-1]))
