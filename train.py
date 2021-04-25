@@ -1,96 +1,169 @@
-import pytreebank
-import numpy as np
-import torch
-import sys
 import argparse
-from glove_reader import GloveReader
-from gensim.utils import tokenize
 import itertools
-from model import RNN
+import sys
 import time
 
-def transform_and_pad(data):
-    """
-        Given the input dataset, returns three tensors of the padded data (on the left!)
-        Returns:
-            content - Tensor Nxd
-            labels  - Tensor Nx1
-            mask    - Tensor Nxd (binary)
-        
-    """
-    max_len = max(map(lambda x: len(x[1:]), data))
-    labels = torch.tensor(list(map(lambda x: x[0], data)))
-    data = list(map(lambda x: x[1:], data))
-    content = torch.tensor([(0,)*(max_len - len(x)) + x for x in data])
-    content_mask = torch.tensor([(0,)*(max_len - len(x)) + (1,) * len(x) for x in data])
-    return content, labels, content_mask
+import numpy as np
+import pandas as pd
+import pytreebank
+import torch
+from gensim.utils import tokenize
 
-def train(model, data, mask, labels, max_epochs=50):
+import model
+from dataloader import SST
+from glove_reader import GloveReader
+from util import load_data
+
+
+def validate(model, dev_dataset):
+    dev = torch.utils.data.DataLoader(dev_dataset, batch_size=len(dev_dataset), num_workers=4, shuffle=False)
+    
+    model.eval()
+    
+    loss_fn = torch.nn.CrossEntropyLoss()
+
+    total_count = 0
+    num_correct = 0
+    tot_loss = 0.0
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    for batch in dev:
+        data, labels, mask = batch
+        data = data.to(device)
+        labels = labels.to(device)
+        mask = mask.to(device)
+
+        output = model(data,mask)
+        tot_loss += loss_fn(output, labels).item()
+        
+        pred = torch.argmax(output, 1)
+        num_correct += (pred == labels).sum().item()
+        total_count += pred.size(0)
+
+    model.train()
+    return num_correct / total_count, tot_loss
+
+
+def train(model, train_dataset, dev_dataset, max_epochs=100, model_name='model.save', stopping_counter=20):
 
     losses = []
     accs = []
+    dev_losses = []
+    dev_accs = []
+    
 
     optimizer = torch.optim.Adam(model.parameters())
-    loss_fn = torch.nn.CrossEntropyLoss()
 
+    loss_fn = torch.nn.CrossEntropyLoss()
+    
+    best_loss = float('+inf')
+    best_model = model
+    
+    counter = 0
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+
+    train = torch.utils.data.DataLoader(train_dataset, batch_size=256, num_workers=2, shuffle=True)
     model.train()
     for epoch in range(max_epochs):
         print("-" * 10 , "EPOCH ", epoch,  "-"*10)
         
         num_correct = 0.0
         total_count = 0.0
-
         start = time.time()
-        # TODO batched?
-
-        optimizer.zero_grad()
-
-        output = model(data, mask)
-        loss = loss_fn(output, labels)
-        loss.backward()
-        optimizer.step()
+        epoch_loss = 0.0
         
+        for i, batch in enumerate(train):
+            if i + 1 % 100 == 0:
+                print('Batch ', i)
+            
+            data, labels, mask = batch
+            
+            data = data.to(device)
+            labels = labels.to(device)
+            mask = mask.to(device)
+            # print(data.device, mask.device, labels.device)
+
+            optimizer.zero_grad()
+
+            output = model(data, mask)
+            loss = loss_fn(output, labels)
+            loss.backward()
+            optimizer.step()
+
+            pred = torch.argmax(output, 1)
+            num_correct += (pred == labels).sum().item()
+            total_count += pred.size(0)
+            epoch_loss += loss.item()
+        
+        
+        losses.append(epoch_loss / (i+1))
+        accs.append(num_correct / total_count)
+    
         end = time.time()
         
-        pred = torch.argmax(output, 1)
-        num_correct += (pred == labels).sum().item()
-        total_count += pred.size(0)
-        losses.append(loss.item())
-        accs.append(num_correct / total_count)
-
-        print(f'Loss={losses[-1]}, Accuracy={accs[-1]}, took {end - start}s')
-
-
+        counter += 1 # for early stopping
+        
+        eval_acc, eval_loss = validate(model, dev_dataset)
+        
+        print(f'Loss={losses[-1]}, Accuracy={accs[-1]}, Dev Accuracy={eval_acc}, epoch took {end - start}s')
+        
+        dev_losses.append(eval_loss)
+        dev_accs.append(eval_acc)
+        
+        if eval_loss < best_loss:
+            best_loss = eval_loss
+            best_model = model
+            counter = 0
+            print("Saving new best model...")
+            torch.save(best_model.state_dict(), model_name)
+        
+        
+        if counter == stopping_counter:
+            return losses, accs, dev_losses, dev_accs
+    
+    return losses, accs, dev_losses, dev_accs
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--data_dir', type=str, default='./trees/train.txt')
-    # parser.add_argument('')
-    
-    args = parser.parse_args()
-    
     #loads glove embeddings
     glove = GloveReader()
-    
-    #load dataset
-    data = pytreebank.import_tree_corpus(args.data_dir)
-    data = list(map(lambda x: x.to_labeled_lines()[0], data))
-    
-    # tokenizes and filters those words that exist in the dictionary for each example
-    data = list(map(lambda x: (x[0], list(filter(lambda x: x in glove.words2idx, tokenize(x[1], lower=True)))), data))
 
-    # transforms words into numbers
-    data = list(map(lambda x: (x[0],*list(map(lambda y: glove.words2idx[y], x[1]))), data))
+    #load train dataset
+    train_data = SST(*load_data('./trees/train.txt', glove))
 
-    # pad data and transform tensor
-    content, labels, mask = transform_and_pad(data)
-    del data
 
-    m  = RNN(300, 2, 128, 5, pretrained_embeddings=glove.embeddings)
-    # res = m(content, mask)
+    # load dev dataset
+    dev_data = SST(*load_data('./trees/dev.txt', glove))
 
-    train(m, content, mask, labels)
 
+
+    from itertools import product
+    configuration = {
+        'dropout': [0, 0.2],
+        'hidden_size' : [256, 512],
+        'n_layers': [1, 3],
+        'embeddings': [glove.embeddings, None]
+    }
+
+    model_params = list(product(*configuration.values()))
+    param_names = list(configuration)
+
+
+    import pickle
+    for params in model_params:
+        info = f'{params[0]}_{params[1]}_{params[2]}_{"glove" if params[3] is not None else "default"}'
+        model_name = f'model_{info}'
+        data_name = f'data_{info}'
+
+        m = model.RNN(300, params[2], params[1], 5, pretrained_embeddings=params[3], dropout=params[0])
+        
+        data = train(m, train_data, dev_data, model_name=model_name)
+        
+        with open(data_name, 'wb') as f:
+            pickle.dump(data, f)
+        
+        del m
+        del data
 
 if __name__ == '__main__':
     main()
