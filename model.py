@@ -7,11 +7,12 @@ class RNN(nn.Module):
         super(RNN, self).__init__()
 
         if pretrained_embeddings is not None:
-            self.embeddings = lambda x: torch.tensor(pretrained_embeddings[x]).float()
+            self._embeddings = nn.Parameter(torch.tensor(pretrained_embeddings).float())
+            self.embeddings = lambda x: self._embeddings[x]
         else:
             self.embeddings = nn.Embedding(400001, 300)
 
-        self.hidden_states = [torch.zeros(hidden_size)  for _ in range(n_hidden)]
+        self.hidden_states = nn.ParameterList([nn.Parameter(torch.zeros(hidden_size))  for _ in range(n_hidden)])
         for state in self.hidden_states:
             state.data.uniform_(-initrange, initrange)
 
